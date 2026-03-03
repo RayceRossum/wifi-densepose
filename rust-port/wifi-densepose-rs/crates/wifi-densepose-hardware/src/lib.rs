@@ -4,6 +4,7 @@
 //! from various hardware sources:
 //!
 //! - **ESP32/ESP32-S3**: Parses ADR-018 binary CSI frames streamed over UDP
+//! - **ESP-MESH**: Topology types and health tracking for mesh backhaul nodes
 //! - **UDP Aggregator**: Receives frames from multiple ESP32 nodes (ADR-018 Layer 2)
 //! - **Bridge**: Converts CsiFrame → CsiData for the detection pipeline (ADR-018 Layer 3)
 //!

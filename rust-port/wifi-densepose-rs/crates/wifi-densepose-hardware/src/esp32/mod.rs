@@ -4,11 +4,16 @@
 //! including TDM (Time-Division Multiplexed) sensing schedules
 //! per ADR-029 (RuvSense) and ADR-031 (RuView).
 //!
+//! ## Mesh Topology
+//!
+//! - `mesh` -- ESP-MESH topology types, path tracking, and health monitoring
+//!
 //! ## Security (ADR-032 / ADR-032a)
 //!
 //! - `quic_transport` -- QUIC-based authenticated transport for aggregator nodes
 //! - `secure_tdm` -- Secured TDM protocol with dual-mode (QUIC / manual crypto)
 
+pub mod mesh;
 pub mod tdm;
 pub mod quic_transport;
 pub mod secure_tdm;
@@ -28,4 +33,9 @@ pub use secure_tdm::{
     SecureTdmCoordinator, SecureTdmConfig, SecureTdmError,
     SecLevel, AuthenticatedBeacon, SecureCycleOutput,
     ReplayWindow, AUTHENTICATED_BEACON_SIZE,
+};
+
+pub use mesh::{
+    MeshNodeRole, MeshNodeInfo, MeshTopology,
+    MeshNodeHealth, MeshHealthSummary, MeshHealthTracker,
 };
