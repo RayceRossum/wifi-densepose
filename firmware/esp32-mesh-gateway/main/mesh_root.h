@@ -33,4 +33,15 @@ void mesh_root_start(void);
  */
 uint32_t mesh_root_get_frame_count(void);
 
+/**
+ * Start the periodic topology report task.
+ *
+ * Sends a compact topology report (magic 0xC5110002) to the aggregator
+ * every 10 seconds over the same UDP socket. Contains per-node entries
+ * with node_id, parent_id, layer, child_count, and role.
+ *
+ * The aggregator distinguishes these from CSI frames by magic number.
+ */
+void mesh_root_start_topology_reports(void);
+
 #endif /* MESH_ROOT_H */

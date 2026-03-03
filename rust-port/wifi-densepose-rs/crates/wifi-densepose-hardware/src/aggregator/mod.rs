@@ -11,6 +11,7 @@ use std::net::{SocketAddr, UdpSocket};
 use std::sync::mpsc::{self, SyncSender, Receiver};
 
 use crate::csi_frame::CsiFrame;
+use crate::esp32::mesh::{MeshTopology, MeshTopologyReport, MeshHealthTracker};
 use crate::esp32_parser::Esp32CsiParser;
 
 /// Configuration for the UDP aggregator.
@@ -150,9 +151,119 @@ impl Esp32Aggregator {
     }
 }
 
+/// Mesh-aware aggregator that handles both CSI frames and topology reports.
+///
+/// Wraps `Esp32Aggregator` and adds mesh topology tracking and health
+/// monitoring. Topology reports (magic 0xC5110002) from the gateway are
+/// parsed and applied to update the live mesh tree. CSI frames are handled
+/// normally and also feed the health tracker.
+pub struct MeshAggregator {
+    inner: Esp32Aggregator,
+    topology: MeshTopology,
+    health: MeshHealthTracker,
+    topo_reports_received: u64,
+}
+
+impl MeshAggregator {
+    /// Create a new mesh-aware aggregator.
+    pub fn new(config: &AggregatorConfig) -> io::Result<(Self, Receiver<CsiFrame>)> {
+        let (inner, rx) = Esp32Aggregator::new(config)?;
+        Ok((
+            Self {
+                inner,
+                topology: MeshTopology::new(0),
+                health: MeshHealthTracker::default_timeout(),
+                topo_reports_received: 0,
+            },
+            rx,
+        ))
+    }
+
+    /// Create from an existing socket (for testing).
+    pub fn from_socket(socket: UdpSocket, tx: SyncSender<CsiFrame>) -> Self {
+        Self {
+            inner: Esp32Aggregator::from_socket(socket, tx),
+            topology: MeshTopology::new(0),
+            health: MeshHealthTracker::default_timeout(),
+            topo_reports_received: 0,
+        }
+    }
+
+    /// Run the blocking receive loop. Handles both CSI frames and topology reports.
+    pub fn run(&mut self) -> io::Result<()> {
+        let mut buf = [0u8; 2048];
+        loop {
+            let (n, _src) = self.inner.socket.recv_from(&mut buf)?;
+            self.handle_packet(&buf[..n]);
+        }
+    }
+
+    /// Handle a single UDP packet — dispatches by magic number.
+    pub fn handle_packet(&mut self, data: &[u8]) {
+        if MeshTopologyReport::is_topology_report(data) {
+            if let Some(report) = MeshTopologyReport::parse(data) {
+                self.topology.apply_report(&report);
+                self.topo_reports_received += 1;
+            }
+        } else {
+            // Try as CSI frame
+            if let Ok((frame, _)) = Esp32CsiParser::parse_frame(data) {
+                let node_id = frame.metadata.node_id;
+                let seq = frame.metadata.sequence;
+
+                // Track sequence gaps
+                let gap = match self.inner.nodes.get_mut(&node_id) {
+                    Some(state) => state.update(seq),
+                    None => {
+                        self.inner.nodes.insert(node_id, NodeState::new(seq));
+                        0
+                    }
+                };
+
+                // Feed health tracker
+                self.health.record_frame(node_id, gap as u64);
+
+                // Forward to channel
+                let _ = self.inner.tx.try_send(frame);
+            }
+        }
+    }
+
+    /// Get a reference to the live mesh topology.
+    pub fn topology(&self) -> &MeshTopology {
+        &self.topology
+    }
+
+    /// Get a mutable reference to the health tracker.
+    pub fn health(&self) -> &MeshHealthTracker {
+        &self.health
+    }
+
+    /// Check health for all nodes (call periodically).
+    pub fn check_health(&mut self) {
+        self.health.check_health();
+    }
+
+    /// Number of topology reports received from the gateway.
+    pub fn topo_reports_received(&self) -> u64 {
+        self.topo_reports_received
+    }
+
+    /// Get the number of dropped frames for a specific node.
+    pub fn drops_for_node(&self, node_id: u8) -> u64 {
+        self.inner.drops_for_node(node_id)
+    }
+
+    /// Get the number of tracked nodes.
+    pub fn node_count(&self) -> usize {
+        self.inner.node_count()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::esp32::mesh::TopoReportEntry;
     use std::sync::mpsc;
 
     /// Helper: build an ADR-018 frame packet for testing.
@@ -272,5 +383,154 @@ mod tests {
         let frame = rx.try_recv().unwrap();
         assert_eq!(frame.metadata.node_id, 3);
         assert_eq!(frame.metadata.sequence, 42);
+    }
+
+    // ---- MeshAggregator tests ----
+
+    /// Helper: build a topology report packet.
+    fn build_topo_packet(entries: &[(u8, u8, u8, u8, u8)]) -> Vec<u8> {
+        let max_layer = entries.iter().map(|e| e.2).max().unwrap_or(0);
+        let report = MeshTopologyReport {
+            node_count: entries.len() as u8,
+            max_layer,
+            entries: entries.iter().map(|&(nid, pid, layer, children, role)| {
+                TopoReportEntry {
+                    node_id: nid,
+                    parent_id: pid,
+                    layer,
+                    child_count: children,
+                    role,
+                }
+            }).collect(),
+        };
+        report.to_bytes()
+    }
+
+    #[test]
+    fn test_mesh_aggregator_handles_csi_frame() {
+        let (tx, rx) = mpsc::sync_channel(16);
+        let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let mut agg = MeshAggregator::from_socket(socket, tx);
+
+        let pkt = build_test_packet(1, 0, 4);
+        agg.handle_packet(&pkt);
+
+        let frame = rx.try_recv().unwrap();
+        assert_eq!(frame.metadata.node_id, 1);
+        assert_eq!(agg.node_count(), 1);
+        assert_eq!(agg.topo_reports_received(), 0);
+
+        // Health tracker should have recorded the frame
+        let h = agg.health().node_health(1).unwrap();
+        assert_eq!(h.frames_received, 1);
+    }
+
+    #[test]
+    fn test_mesh_aggregator_handles_topology_report() {
+        let (tx, rx) = mpsc::sync_channel(16);
+        let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let mut agg = MeshAggregator::from_socket(socket, tx);
+
+        let topo_pkt = build_topo_packet(&[
+            (0, 0xFF, 0, 2, 0),  // root
+            (1, 0, 1, 0, 2),     // leaf
+            (2, 0, 1, 0, 2),     // leaf
+        ]);
+        agg.handle_packet(&topo_pkt);
+
+        // Should have updated topology, not sent any CSI frame
+        assert!(rx.try_recv().is_err());
+        assert_eq!(agg.topo_reports_received(), 1);
+        assert_eq!(agg.topology().node_count(), 3); // root + 2 leaves
+    }
+
+    #[test]
+    fn test_mesh_aggregator_mixed_packets() {
+        let (tx, rx) = mpsc::sync_channel(16);
+        let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let mut agg = MeshAggregator::from_socket(socket, tx);
+
+        // Send a CSI frame
+        agg.handle_packet(&build_test_packet(1, 0, 4));
+
+        // Send a topology report
+        let topo_pkt = build_topo_packet(&[
+            (0, 0xFF, 0, 1, 0),
+            (1, 0, 1, 0, 2),
+        ]);
+        agg.handle_packet(&topo_pkt);
+
+        // Send another CSI frame
+        agg.handle_packet(&build_test_packet(1, 1, 4));
+
+        // Should have 2 CSI frames on the channel
+        assert!(rx.try_recv().is_ok());
+        assert!(rx.try_recv().is_ok());
+        assert!(rx.try_recv().is_err());
+
+        // Topology should reflect the report
+        assert_eq!(agg.topology().node_count(), 2);
+        assert_eq!(agg.topo_reports_received(), 1);
+
+        // Health tracker should have 2 frames for node 1
+        let h = agg.health().node_health(1).unwrap();
+        assert_eq!(h.frames_received, 2);
+    }
+
+    #[test]
+    fn test_mesh_aggregator_drops_bad_packets() {
+        let (tx, rx) = mpsc::sync_channel(16);
+        let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let mut agg = MeshAggregator::from_socket(socket, tx);
+
+        // Garbage — neither CSI nor topo
+        agg.handle_packet(&[0xFF, 0xFE, 0xFD, 0xFC, 0x00]);
+
+        assert!(rx.try_recv().is_err());
+        assert_eq!(agg.node_count(), 0);
+        assert_eq!(agg.topo_reports_received(), 0);
+    }
+
+    #[test]
+    fn test_mesh_aggregator_sequence_gaps_feed_health() {
+        let (tx, _rx) = mpsc::sync_channel(16);
+        let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let mut agg = MeshAggregator::from_socket(socket, tx);
+
+        // seq 0
+        agg.handle_packet(&build_test_packet(1, 0, 4));
+        // seq 5 — gap of 4
+        agg.handle_packet(&build_test_packet(1, 5, 4));
+
+        assert_eq!(agg.drops_for_node(1), 4);
+
+        let h = agg.health().node_health(1).unwrap();
+        assert_eq!(h.frames_dropped, 4);
+    }
+
+    #[test]
+    fn test_mesh_aggregator_topology_updates_replace() {
+        let (tx, _rx) = mpsc::sync_channel(16);
+        let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let mut agg = MeshAggregator::from_socket(socket, tx);
+
+        // First report: root + nodes 1, 2
+        agg.handle_packet(&build_topo_packet(&[
+            (0, 0xFF, 0, 2, 0),
+            (1, 0, 1, 0, 2),
+            (2, 0, 1, 0, 2),
+        ]));
+        assert_eq!(agg.topology().node_count(), 3);
+
+        // Second report: root + nodes 1, 3 (node 2 gone, node 3 new)
+        agg.handle_packet(&build_topo_packet(&[
+            (0, 0xFF, 0, 2, 0),
+            (1, 0, 1, 1, 1),
+            (3, 1, 2, 0, 2),
+        ]));
+        assert_eq!(agg.topology().node_count(), 3);
+        assert!(agg.topology().node_info(2).is_none());
+        assert!(agg.topology().node_info(3).is_some());
+        assert_eq!(agg.topo_reports_received(), 2);
     }
 }

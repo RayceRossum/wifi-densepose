@@ -38,4 +38,5 @@ pub use secure_tdm::{
 pub use mesh::{
     MeshNodeRole, MeshNodeInfo, MeshTopology,
     MeshNodeHealth, MeshHealthSummary, MeshHealthTracker,
+    MeshTopologyReport, TopoReportEntry, TOPO_REPORT_MAGIC,
 };

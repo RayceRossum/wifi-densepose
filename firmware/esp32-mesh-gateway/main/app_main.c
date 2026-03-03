@@ -254,6 +254,9 @@ void app_main(void)
     /* Start mesh receive + forward task */
     mesh_root_start();
 
+    /* Start topology report task (sends mesh tree to aggregator) */
+    mesh_root_start_topology_reports();
+
     /* Start status reporting task */
     xTaskCreatePinnedToCore(status_task, "gw_status", 3072, NULL,
                             2, NULL, tskNO_AFFINITY);
