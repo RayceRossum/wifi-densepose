@@ -1,0 +1,58 @@
+menu "Mesh Gateway Configuration"
+
+    config MESH_CHANNEL
+        int "Mesh WiFi Channel (1-13)"
+        default 6
+        range 1 13
+        help
+            WiFi channel used by the ESP-MESH network.
+            All nodes (gateway + sensors) must use the same channel.
+
+    config MESH_AP_MAX_CONNECTIONS
+        int "Max mesh children per node"
+        default 6
+        range 1 10
+        help
+            Maximum number of child nodes that can connect to this
+            node in the mesh tree.
+
+    config MESH_MAX_LAYER
+        int "Maximum mesh layers"
+        default 6
+        range 2 25
+        help
+            Maximum depth of the mesh tree topology.
+
+    config MESH_ROUTER_SSID
+        string "Router SSID"
+        default "wifi-densepose"
+        help
+            SSID of the upstream travel router that the gateway
+            connects to for IP connectivity.
+
+    config MESH_ROUTER_PASSWORD
+        string "Router Password"
+        default ""
+        help
+            Password for the upstream travel router.
+
+    config MESH_AP_PASSWORD
+        string "Mesh AP Password"
+        default "meshpassword"
+        help
+            Password for the mesh network internal AP connections.
+
+    config MESH_AGGREGATOR_IP
+        string "Aggregator IP"
+        default "192.168.8.100"
+        help
+            IP address of the CSI aggregator (Steam Deck).
+
+    config MESH_AGGREGATOR_PORT
+        int "Aggregator UDP Port"
+        default 5005
+        range 1024 65535
+        help
+            UDP port the CSI aggregator listens on.
+
+endmenu

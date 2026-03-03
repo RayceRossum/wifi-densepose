@@ -1,0 +1,56 @@
+menu "CSI Mesh Node Configuration"
+
+    config MESH_NODE_ID
+        int "Node ID (1-254)"
+        default 1
+        range 1 254
+        help
+            Unique identifier for this sensor node. Used in the
+            ADR-018 binary frame header. Node 0 is reserved for
+            the gateway.
+
+    config MESH_CHANNEL
+        int "Mesh WiFi Channel (1-13)"
+        default 6
+        range 1 13
+        help
+            WiFi channel used by the ESP-MESH network.
+            Must match the gateway and all other sensor nodes.
+
+    config MESH_AP_MAX_CONNECTIONS
+        int "Max mesh children per node"
+        default 6
+        range 1 10
+        help
+            Maximum number of child nodes that can connect to this
+            node in the mesh tree (relay capacity).
+
+    config MESH_MAX_LAYER
+        int "Maximum mesh layers"
+        default 6
+        range 2 25
+        help
+            Maximum depth of the mesh tree topology.
+
+    config MESH_ROUTER_SSID
+        string "Router SSID"
+        default "wifi-densepose"
+        help
+            SSID of the upstream travel router. Only the root node
+            connects to it directly, but all nodes need this for
+            mesh configuration.
+
+    config MESH_ROUTER_PASSWORD
+        string "Router Password"
+        default ""
+        help
+            Password for the upstream travel router.
+
+    config MESH_AP_PASSWORD
+        string "Mesh AP Password"
+        default "meshpassword"
+        help
+            Password for the mesh network internal AP connections.
+            Must match all nodes in the mesh.
+
+endmenu
